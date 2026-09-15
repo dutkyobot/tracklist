@@ -269,6 +269,7 @@ const App = {
     playerReady:false,
     pendingPlay:null,
     watchInterval:null,
+    lastKnownTime:null,
   },
 
   els:{
@@ -298,6 +299,10 @@ const App = {
     this.els.list.addEventListener('dragover', (e) => this.onDragOver(e));
     this.els.list.addEventListener('drop', (e) => this.onDrop(e));
     this.els.list.addEventListener('dragend', (e) => this.onDragEnd(e));
+
+    // 유튜브 임베드 안의 재생바를 사용자가 직접 움직여도(=구간 이동)
+    // 그 시각에 맞는 트랙을 계속 따라가도록 주기적으로 확인한다.
+    this.state.watchInterval = setInterval(() => this.syncToPlaybackTime(), 400);
   },
 
   /* ---------- 타임테이블 파싱 ---------- */
@@ -376,41 +381,58 @@ const App = {
 
       this.els.list.appendChild(row);
     });
-
-    this.startWatcher();
   },
 
-  /* ---------- 트랙 경계 감시 ----------
-     한 영상 안에서 시간대로 곡을 나눈 것뿐이라, 영상 자체가 끝나는
-     시점(onStateChange)만으로는 다음 곡으로 못 넘어간다.
-     그래서 현재 재생 시각이 다음 트랙의 시작 시각에 도달했는지
-     주기적으로 확인해서, 도달하면 next()를 호출한다.
+  /* ---------- 재생 시각 ↔ 트랙 동기화 ----------
+     한 영상 안에서 시간대로 곡을 나눈 것뿐이라 두 가지를 직접 감지해야 한다.
+     1) 자연스러운 재생이 다음 트랙 구간 시작 시각을 지나갔으면 -> 다음 트랙으로 넘어간다.
+     2) 폴링 간격에 비해 시각이 갑자기 크게 뛰거나 되돌아갔으면(=사용자가 재생바를
+        직접 움직인 것) -> 그 시각에 해당하는 트랙으로 스냅해서 재생한다.
   */
 
-  startWatcher(){
-    this.clearWatcher();
+  findPlaylistIndexForTime(t){
+    const { playlist } = this.state; // parseTimeline에서 이미 시간순 정렬됨
+    let found = 0;
+    for(let i = 0; i < playlist.length; i++){
+      if(playlist[i].time <= t) found = i;
+      else break;
+    }
+    return found;
+  },
 
-    const { order, index, playlist } = this.state;
-    const nextPosition = index + 1;
+  syncToPlaybackTime(){
+    const { player, playlist, order } = this.state;
+    if(playlist.length === 0) return;
+    if(!player || typeof player.getCurrentTime !== 'function') return;
+
+    const currentTime = player.getCurrentTime();
+
+    if(this.state.lastKnownTime === null){
+      this.state.lastKnownTime = currentTime;
+      return;
+    }
+
+    const delta = currentTime - this.state.lastKnownTime;
+    this.state.lastKnownTime = currentTime;
+
+    // 폴링 주기(0.4초)보다 훨씬 크게 튀거나 뒤로 되돌아갔으면 사용자가 직접 탐색한 것
+    const isManualSeek = delta < -0.75 || delta > 1.5;
+
+    if(isManualSeek){
+      const playlistIndex = this.findPlaylistIndexForTime(currentTime);
+      const position = order.indexOf(playlistIndex);
+      if(position !== -1 && position !== this.state.index){
+        this.play(position);
+      }
+      return;
+    }
+
+    const nextPosition = this.state.index + 1;
     if(nextPosition >= order.length) return; // 마지막 트랙은 영상 종료 이벤트로 처리
 
     const nextTrack = playlist[order[nextPosition]];
-
-    this.state.watchInterval = setInterval(() => {
-      const player = this.state.player;
-      if(!player || typeof player.getCurrentTime !== 'function') return;
-
-      const currentTime = player.getCurrentTime();
-      if(currentTime >= nextTrack.time){
-        this.next();
-      }
-    }, 500);
-  },
-
-  clearWatcher(){
-    if(this.state.watchInterval){
-      clearInterval(this.state.watchInterval);
-      this.state.watchInterval = null;
+    if(currentTime >= nextTrack.time){
+      this.play(nextPosition);
     }
   },
 
@@ -420,6 +442,9 @@ const App = {
     this.state.index = position;
     const track = this.state.playlist[this.state.order[position]];
     if(!track) return;
+
+    // 지금 이 시각으로 우리가 직접 이동시키는 것이므로, 탐색 감지 기준도 같이 맞춰둔다
+    this.state.lastKnownTime = track.time;
 
     this.els.now.textContent = track.title;
     this.els.nowIndex.textContent = `${position + 1} / ${this.state.order.length}`;
