@@ -268,6 +268,7 @@ const App = {
     player:null,
     playerReady:false,
     pendingPlay:null,
+    watchInterval:null,
   },
 
   els:{
@@ -375,6 +376,42 @@ const App = {
 
       this.els.list.appendChild(row);
     });
+
+    this.startWatcher();
+  },
+
+  /* ---------- 트랙 경계 감시 ----------
+     한 영상 안에서 시간대로 곡을 나눈 것뿐이라, 영상 자체가 끝나는
+     시점(onStateChange)만으로는 다음 곡으로 못 넘어간다.
+     그래서 현재 재생 시각이 다음 트랙의 시작 시각에 도달했는지
+     주기적으로 확인해서, 도달하면 next()를 호출한다.
+  */
+
+  startWatcher(){
+    this.clearWatcher();
+
+    const { order, index, playlist } = this.state;
+    const nextPosition = index + 1;
+    if(nextPosition >= order.length) return; // 마지막 트랙은 영상 종료 이벤트로 처리
+
+    const nextTrack = playlist[order[nextPosition]];
+
+    this.state.watchInterval = setInterval(() => {
+      const player = this.state.player;
+      if(!player || typeof player.getCurrentTime !== 'function') return;
+
+      const currentTime = player.getCurrentTime();
+      if(currentTime >= nextTrack.time){
+        this.next();
+      }
+    }, 500);
+  },
+
+  clearWatcher(){
+    if(this.state.watchInterval){
+      clearInterval(this.state.watchInterval);
+      this.state.watchInterval = null;
+    }
   },
 
   /* ---------- 재생 제어 ---------- */
